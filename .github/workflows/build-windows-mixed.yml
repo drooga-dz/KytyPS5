@@ -1,0 +1,106 @@
+# Build Windows de KytyPS5 avec le correctif « mixed color/depth sample counts ».
+#
+# A deposer dans le depot sous .github/workflows/build-windows-mixed.yml
+# (le script Push-To-GitHub.ps1 le fait pour vous).
+#
+# Le runner Windows de GitHub installe Visual Studio, clang-cl, vcpkg/glslang et Qt 6 :
+# vous n'avez rien a installer chez vous. A la fin, l'archive
+# "KytyPS5-Windows-x64" est telechargeable en bas de la page du workflow.
+
+name: Build KytyPS5 (Windows, mixed samples)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+concurrency:
+  group: build-windows-mixed-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  KYTY_BUILD_ORIGIN: Source
+  KYTY_BUILD_REPOSITORY: ${{ github.repository }}
+
+jobs:
+  windows:
+    name: Build KytyPS5 (Windows)
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Visual Studio environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install glslang (vcpkg)
+        shell: pwsh
+        run: |
+          $vcpkgRoot = Split-Path (Get-Command vcpkg).Source
+          vcpkg install glslang[tools,opt]:x64-windows
+          "$vcpkgRoot\installed\x64-windows\tools\glslang" |
+            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install Qt 6.10.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.10.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Verify toolchain
+        shell: cmd
+        run: |
+          git --version
+          cmake --version
+          ninja --version
+          clang-cl --version
+          glslangValidator --version
+          echo Qt6_DIR=%Qt6_DIR%
+
+      - name: Configure
+        shell: cmd
+        run: |
+          cmake -S . -B _Build/windows ^
+            -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON ^
+            -DKYTY_BUILD_ORIGIN=%KYTY_BUILD_ORIGIN% ^
+            -DKYTY_BUILD_REPOSITORY=%KYTY_BUILD_REPOSITORY% ^
+            -DCMAKE_C_COMPILER=clang-cl ^
+            -DCMAKE_CXX_COMPILER=clang-cl ^
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache ^
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache ^
+            -DCMAKE_PREFIX_PATH="%Qt6_DIR%"
+
+      - name: Build test unitaire (validation du correctif)
+        continue-on-error: true
+        shell: cmd
+        run: |
+          cmake --build _Build/windows --target mixed_samples_tests
+          _Build\windows\mixed_samples_tests.exe
+
+      - name: Build
+        shell: cmd
+        run: |
+          cmake --build _Build/windows --target launcher --parallel
+
+      - name: Install
+        shell: cmd
+        run: |
+          cmake --install _Build/windows --prefix _Build/windows/install
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: KytyPS5-Windows-x64
+          path: _Build/windows/install/**
+          if-no-files-found: error
